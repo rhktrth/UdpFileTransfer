@@ -20,31 +20,32 @@ public class UdpSendFile extends Thread {
 
 	private File inputFile;
 	private int splitSize;
-	private int splitCount;
 	private InetSocketAddress remoteAddress;
-	private DatagramSocket sendSocket;
 	private int interval;
+
+	private int splitCount;
 	private RandomAccessFile raf;
+	private DatagramSocket sendSocket;
 
 	public UdpSendFile(File fileobj, int dsize, String ip, int port, int it) {
-		inputFile = fileobj;
-		splitSize = dsize;
-		remoteAddress = new InetSocketAddress(ip, port);
-		interval = it;
+		this.inputFile = fileobj;
+		this.splitSize = dsize;
+		this.remoteAddress = new InetSocketAddress(ip, port);
+		this.interval = it;
 	}
 
 	public void run() {
-		splitCount = (int) (inputFile.length() / splitSize) + 1;
+		this.splitCount = (int) (inputFile.length() / splitSize) + 1;
 
 		try {
-			raf = new RandomAccessFile(this.inputFile, "r");
+			this.raf = new RandomAccessFile(this.inputFile, "r");
 		} catch (FileNotFoundException e) {
 			e.printStackTrace();
 			return;
 		}
 
 		try {
-			sendSocket = new DatagramSocket();
+			this.sendSocket = new DatagramSocket();
 		} catch (SocketException e) {
 			e.printStackTrace();
 		}
@@ -63,22 +64,16 @@ public class UdpSendFile extends Thread {
 	}
 
 	public void sendMetaInfo() {
-		byte[] bs = new byte[12];
-		bs[3] = (byte) (0xff & (SEQ_NUM_META));
-		bs[2] = (byte) (0xff & (SEQ_NUM_META >>> 8));
-		bs[1] = (byte) (0xff & (SEQ_NUM_META >>> 16));
-		bs[0] = (byte) (0xff & (SEQ_NUM_META >>> 24));
-		bs[7] = (byte) (0xff & (splitSize));
-		bs[6] = (byte) (0xff & (splitSize >>> 8));
-		bs[5] = (byte) (0xff & (splitSize >>> 16));
-		bs[4] = (byte) (0xff & (splitSize >>> 24));
-		bs[11] = (byte) (0xff & (splitCount));
-		bs[10] = (byte) (0xff & (splitCount >>> 8));
-		bs[9] = (byte) (0xff & (splitCount >>> 16));
-		bs[8] = (byte) (0xff & (splitCount >>> 24));
+		byte[] fn = inputFile.getName().getBytes();
+
+		byte[] bs = new byte[12 + fn.length];
+		System.arraycopy(IntAsBytes(SEQ_NUM_META), 0, bs, 0, 4);
+		System.arraycopy(IntAsBytes(splitSize), 0, bs, 4, 4);
+		System.arraycopy(IntAsBytes(splitCount), 0, bs, 8, 4);
+		System.arraycopy(fn, 0, bs, 12, fn.length);
 
 		System.out.println("send metainfo");
-		sendUdpPacket(mergeByteArray(bs, inputFile.getName().getBytes()));
+		sendUdpPacket(bs);
 	}
 
 	public void sendSpecificData(int n) {
@@ -87,23 +82,23 @@ public class UdpSendFile extends Thread {
 			return;
 		}
 
-		byte[] bs = new byte[4];
-		bs[3] = (byte) (0xff & (n));
-		bs[2] = (byte) (0xff & (n >>> 8));
-		bs[1] = (byte) (0xff & (n >>> 16));
-		bs[0] = (byte) (0xff & (n >>> 24));
+		byte[] ln = IntAsBytes(n);
 
-		byte[] buf = new byte[splitSize];
+		byte[] data = new byte[splitSize];
 		try {
-			raf.seek(splitSize * n);
-			raf.read(buf);
+			this.raf.seek(splitSize * n);
+			this.raf.read(data);
 		} catch (IOException e) {
 			e.printStackTrace();
 			return;
 		}
 
-		System.out.println("send " + n);
-		sendUdpPacket(mergeByteArray(bs, buf));
+		byte[] mergedArray = new byte[ln.length + data.length];
+		System.arraycopy(ln, 0, mergedArray, 0, ln.length);
+		System.arraycopy(data, 0, mergedArray, ln.length, data.length);
+
+		sendUdpPacket(mergedArray);
+		System.out.println("sent " + n);
 	}
 
 	public void sendMetaInfoAndAllData() {
@@ -116,24 +111,32 @@ public class UdpSendFile extends Thread {
 	}
 
 	private void sendUdpPacket(byte[] sendBuffer) {
-		DatagramPacket sendPacket;
+		DatagramPacket sendPacket = new DatagramPacket(sendBuffer, sendBuffer.length, remoteAddress);
 		try {
-			sendPacket = new DatagramPacket(sendBuffer, sendBuffer.length, remoteAddress);
 			sendSocket.send(sendPacket);
-			Thread.sleep(interval);
 		} catch (SocketException e) {
 			e.printStackTrace();
+			return;
 		} catch (IOException e) {
 			e.printStackTrace();
+			return;
+		}
+
+		try {
+			Thread.sleep(interval);
 		} catch (InterruptedException e) {
 			e.printStackTrace();
+			return;
 		}
 	}
 
-	private static byte[] mergeByteArray(byte[] a, byte[] b) {
-		byte[] mergedArray = new byte[a.length + b.length];
-		System.arraycopy(a, 0, mergedArray, 0, a.length);
-		System.arraycopy(b, 0, mergedArray, a.length, b.length);
-		return mergedArray;
+	private static final byte[] IntAsBytes(int n) {
+		byte[] bs = new byte[4];
+		bs[0] = (byte) ((n & 0xff000000) >>> 24);
+		bs[1] = (byte) ((n & 0x00ff0000) >>> 16);
+		bs[2] = (byte) ((n & 0x0000ff00) >>> 8);
+		bs[3] = (byte) (n & 0x000000ff);
+
+		return bs;
 	}
 }
