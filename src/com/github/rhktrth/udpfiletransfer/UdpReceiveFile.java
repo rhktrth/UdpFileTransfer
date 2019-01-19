@@ -6,13 +6,14 @@
 
 package com.github.rhktrth.udpfiletransfer;
 
-import java.io.BufferedOutputStream;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.SocketException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
@@ -21,10 +22,7 @@ public class UdpReceiveFile extends Thread {
 	private static int SEQ_NUM_META = -1;
 	private static int BUFFUER_SIZE_RECV_META = 1000;
 
-	private byte[][] splitArray;
 	private DatagramSocket receiveSocket;
-	private int splitSize;
-	private int splitCount;
 	private File outputFile;
 	private Set<Integer> missingNumbers;
 
@@ -44,37 +42,18 @@ public class UdpReceiveFile extends Thread {
 	}
 
 	public void run() {
-		try {
-			receiveMetaInfo();
-		} catch (IOException e) {
-			return;
-		}
-		System.out.println("meta info was received");
-
-		try {
-			receiveFile();
-		} catch (IOException e) {
-			return;
-		}
-		System.out.println("all splited data was received");
-
-		try {
-			writeFile();
-		} catch (IOException e) {
-			return;
-		}
-		System.out.println("file written");
-
-		System.exit(0);
-	}
-
-	public void receiveMetaInfo() throws IOException {
-		boolean waitingPacket = true;
 		byte[] buf = new byte[BUFFUER_SIZE_RECV_META];
+		int splitSize;
+		int splitCount;
 
-		while (waitingPacket) {
+		A: while (true) {
 			DatagramPacket packet = new DatagramPacket(buf, buf.length);
-			receiveSocket.receive(packet);
+			try {
+				this.receiveSocket.receive(packet);
+			} catch (IOException e) {
+				e.printStackTrace();
+				return;
+			}
 
 			byte[] packetData = packet.getData();
 			int effectiveLength = packet.getLength();
@@ -83,44 +62,53 @@ public class UdpReceiveFile extends Thread {
 			if (seqnum == SEQ_NUM_META) {
 				splitSize = bytesAsInt(packetData, 4, 4);
 				splitCount = bytesAsInt(packetData, 8, 4);
-				splitArray = new byte[splitCount][];
 				for (int i = 0; i < splitCount; i++) {
-					missingNumbers.add(i);
+					this.missingNumbers.add(i);
 				}
-				waitingPacket = false;
 				String orgFileName = new String(Arrays.copyOfRange(packetData, 12, effectiveLength));
 				System.out.println("meta: " + orgFileName + " " + splitSize + " " + splitCount);
+				break A;
 			}
 		}
-	}
+		System.out.println("meta info was received");
 
-	public void receiveFile() throws IOException {
-		boolean waitingPacket = true;
-		byte[] buf = new byte[4 + splitSize];
+		try {
+			Files.deleteIfExists(Paths.get(outputFile.getPath()));
+			outputFile.createNewFile();
+		} catch (IOException e) {
+			e.printStackTrace();
+			return;
+		}
+		System.out.println("receive file created: " + outputFile);
 
-		while (waitingPacket && !missingNumbers.isEmpty()) {
-			DatagramPacket packet = new DatagramPacket(buf, buf.length);
-			receiveSocket.receive(packet);
+		try (RandomAccessFile raf = new RandomAccessFile(this.outputFile, "rw");) {
+			while (!this.missingNumbers.isEmpty()) {
+				byte[] buf2 = new byte[4 + splitSize];
+				DatagramPacket packet = new DatagramPacket(buf2, buf2.length);
+				try {
+					this.receiveSocket.receive(packet);
+				} catch (IOException e) {
+					e.printStackTrace();
+					return;
+				}
 
-			byte[] packetData = packet.getData();
-			int effectiveLength = packet.getLength();
+				byte[] packetData = packet.getData();
+				int effectiveLength = packet.getLength();
 
-			int seqnum = bytesAsInt(packetData, 0, 4);
-			if (seqnum >= 0) {
-				splitArray[seqnum] = Arrays.copyOfRange(packetData, 4, effectiveLength);
-				missingNumbers.remove(seqnum);
+				int seqnum = bytesAsInt(packetData, 0, 4);
+				if (seqnum >= 0 && this.missingNumbers.contains(seqnum)) {
+					byte[] d = Arrays.copyOfRange(packetData, 4, effectiveLength);
+					raf.seek(splitSize * seqnum);
+					raf.write(d);
+					this.missingNumbers.remove(seqnum);
+				}
 			}
+		} catch (IOException e) {
+			e.printStackTrace();
+			return;
 		}
-	}
 
-	private void writeFile() throws IOException {
-		FileOutputStream fos = new FileOutputStream(outputFile);
-		BufferedOutputStream bos = new BufferedOutputStream(fos);
-		for (byte[] b : splitArray) {
-			bos.write(b, 0, b.length);
-		}
-		bos.flush();
-		bos.close();
+		System.out.println("all splited data were received and written");
 	}
 
 	public void printMissingNumbers() {
