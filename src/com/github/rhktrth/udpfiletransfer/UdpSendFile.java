@@ -6,10 +6,10 @@
 
 package com.github.rhktrth.udpfiletransfer;
 
-import java.io.BufferedInputStream;
 import java.io.File;
-import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
@@ -21,40 +21,45 @@ public class UdpSendFile extends Thread {
 	private File inputFile;
 	private int splitSize;
 	private int splitCount;
-	private byte[][] splitArray;
 	private InetSocketAddress remoteAddress;
 	private DatagramSocket sendSocket;
 	private int interval;
+	private RandomAccessFile raf;
 
-	public UdpSendFile(File fileobj, int dsize, String ip, int port, int it) throws IOException {
+	public UdpSendFile(File fileobj, int dsize, String ip, int port, int it) {
 		inputFile = fileobj;
 		splitSize = dsize;
+		remoteAddress = new InetSocketAddress(ip, port);
+		interval = it;
+	}
+
+	public void run() {
 		splitCount = (int) (inputFile.length() / splitSize) + 1;
 
-		splitArray = new byte[splitCount][];
-		FileInputStream fis = new FileInputStream(inputFile);
-		BufferedInputStream bis = new BufferedInputStream(fis);
-
-		byte[] buf;
-		for (int i = 0; i < splitCount - 1; i++) {
-			buf = new byte[splitSize];
-			bis.read(buf);
-			splitArray[i] = buf;
+		try {
+			raf = new RandomAccessFile(this.inputFile, "r");
+		} catch (FileNotFoundException e) {
+			e.printStackTrace();
+			return;
 		}
-		buf = new byte[(int) (inputFile.length() % splitSize)];
-		bis.read(buf);
-		splitArray[splitCount - 1] = buf;
 
-		bis.close();
-
-		remoteAddress = new InetSocketAddress(ip, port);
 		try {
 			sendSocket = new DatagramSocket();
 		} catch (SocketException e) {
 			e.printStackTrace();
 		}
+	}
 
-		interval = it;
+	public void setInterval(int in) {
+		interval = in;
+	}
+
+	public void close() {
+		try {
+			raf.close();
+		} catch (IOException e) {
+		}
+		sendSocket.close();
 	}
 
 	public void sendMetaInfo() {
@@ -88,8 +93,17 @@ public class UdpSendFile extends Thread {
 		bs[1] = (byte) (0xff & (n >>> 16));
 		bs[0] = (byte) (0xff & (n >>> 24));
 
+		byte[] buf = new byte[splitSize];
+		try {
+			raf.seek(splitSize * n);
+			raf.read(buf);
+		} catch (IOException e) {
+			e.printStackTrace();
+			return;
+		}
+
 		System.out.println("send " + n);
-		sendUdpPacket(mergeByteArray(bs, splitArray[n]));
+		sendUdpPacket(mergeByteArray(bs, buf));
 	}
 
 	public void sendMetaInfoAndAllData() {
@@ -99,14 +113,6 @@ public class UdpSendFile extends Thread {
 		for (int i = 0; i < splitCount; i++) {
 			sendSpecificData(i);
 		}
-	}
-
-	public void close() {
-		sendSocket.close();
-	}
-
-	public void setInterval(int in) {
-		interval = in;
 	}
 
 	private void sendUdpPacket(byte[] sendBuffer) {

@@ -37,10 +37,6 @@ public class UdpReceiveFile extends Thread {
 		missingNumbers = new HashSet<Integer>();
 	}
 
-	public void setOutputFile(File fileobj) {
-		outputFile = fileobj;
-	}
-
 	public void run() {
 		byte[] buf = new byte[BUFFUER_SIZE_RECV_META];
 		int splitSize;
@@ -109,26 +105,31 @@ public class UdpReceiveFile extends Thread {
 		}
 
 		System.out.println("all splited data were received and written");
+		System.exit(0);
 	}
 
-	public void printMissingNumbers() {
-		StringBuilder sb = new StringBuilder();
-		if (missingNumbers.isEmpty()) {
-			sb.append("no meta infomation");
-		} else {
-			for (Integer i : missingNumbers) {
-				sb.append(i);
-				sb.append(", ");
-			}
-			sb.append("EOF");
-		}
-		System.out.println(sb.toString());
+	public void setOutputFile(File fileobj) {
+		outputFile = fileobj;
 	}
 
 	public void close() {
 		if (receiveSocket != null) {
 			receiveSocket.close();
 		}
+	}
+
+	public void printMissingNumbers() {
+		StringBuilder sb = new StringBuilder();
+		if (this.missingNumbers.isEmpty()) {
+			sb.append("no meta infomation");
+		} else {
+			for (Integer i : this.missingNumbers) {
+				sb.append(i);
+				sb.append(", ");
+			}
+			sb.append("EOF");
+		}
+		System.out.println(sb);
 	}
 
 	public static final int bytesAsInt(byte[] byteArr, int offset, int length) {

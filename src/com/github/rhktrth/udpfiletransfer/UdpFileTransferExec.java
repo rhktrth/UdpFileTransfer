@@ -8,7 +8,6 @@ package com.github.rhktrth.udpfiletransfer;
 
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
@@ -25,7 +24,7 @@ public class UdpFileTransferExec {
 	final static int DEFAULT_INTERVAL = 0;
 
 	public static void main(String[] args) {
-		System.out.println("UdpFileTransfer 0.2");
+		System.out.println("UdpFileTransfer 0.3");
 
 		String mode = DEFAULT_MODE;
 		String fileName = DEFAULT_FILENAME;
@@ -88,12 +87,7 @@ public class UdpFileTransferExec {
 		System.out.println("  interval: " + it);
 
 		UdpSendFile udpSendFile;
-		try {
-			udpSendFile = new UdpSendFile(new File(fileName), pl, ip, port, it);
-		} catch (IOException e) {
-			e.printStackTrace();
-			return;
-		}
+		udpSendFile = new UdpSendFile(new File(fileName), pl, ip, port, it);
 		udpSendFile.start();
 
 		String inputString;
