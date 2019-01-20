@@ -14,9 +14,11 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.net.SocketException;
+import java.nio.charset.StandardCharsets;
 
 public class UdpSendFile extends Thread {
-	private static int SEQ_NUM_META = -1;
+	private final static int SEQ_NUM_META = -1;
+	private final static byte[] HEADER_WORD_BYTES = "UFT1".getBytes(StandardCharsets.US_ASCII);
 
 	private File inputFile;
 	private int splitSize;
@@ -66,36 +68,42 @@ public class UdpSendFile extends Thread {
 	public void sendMetaInfo() {
 		byte[] fn = inputFile.getName().getBytes();
 
-		byte[] bs = new byte[12 + fn.length];
-		System.arraycopy(IntAsBytes(SEQ_NUM_META), 0, bs, 0, 4);
-		System.arraycopy(IntAsBytes(splitSize), 0, bs, 4, 4);
-		System.arraycopy(IntAsBytes(splitCount), 0, bs, 8, 4);
-		System.arraycopy(fn, 0, bs, 12, fn.length);
+		byte[] bs = new byte[HEADER_WORD_BYTES.length + 8 + 4 + 8 + fn.length];
+		System.arraycopy(HEADER_WORD_BYTES, 0, bs, 0, HEADER_WORD_BYTES.length);
+		System.arraycopy(LongAsBytes(SEQ_NUM_META), 0, bs, HEADER_WORD_BYTES.length, 8);
+		System.arraycopy(IntAsBytes(splitSize), 0, bs, HEADER_WORD_BYTES.length + 8, 4);
+		System.arraycopy(LongAsBytes(splitCount), 0, bs, HEADER_WORD_BYTES.length + 8 + 4, 8);
+		System.arraycopy(fn, 0, bs, HEADER_WORD_BYTES.length + 8 + 4 + 8, fn.length);
 
 		System.out.println("send metainfo");
 		sendUdpPacket(bs);
 	}
 
-	public void sendSpecificData(int n) {
+	public void sendSpecificData(long n) {
 		if (n < 0 || splitCount - 1 < n) {
 			System.out.println("no such a split number");
 			return;
 		}
 
-		byte[] ln = IntAsBytes(n);
-
 		byte[] data = new byte[splitSize];
+		int readLength;
 		try {
 			this.raf.seek(splitSize * n);
-			this.raf.read(data);
+			readLength = this.raf.read(data);
 		} catch (IOException e) {
 			e.printStackTrace();
 			return;
 		}
+		if (readLength < 0) {
+			System.out.println("can't read " + n);
+			return;
+		}
 
-		byte[] mergedArray = new byte[ln.length + data.length];
-		System.arraycopy(ln, 0, mergedArray, 0, ln.length);
-		System.arraycopy(data, 0, mergedArray, ln.length, data.length);
+		byte[] point = LongAsBytes(n);
+		byte[] mergedArray = new byte[HEADER_WORD_BYTES.length + point.length + readLength];
+		System.arraycopy(HEADER_WORD_BYTES, 0, mergedArray, 0, HEADER_WORD_BYTES.length);
+		System.arraycopy(point, 0, mergedArray, HEADER_WORD_BYTES.length, point.length);
+		System.arraycopy(data, 0, mergedArray, HEADER_WORD_BYTES.length + point.length, readLength);
 
 		sendUdpPacket(mergedArray);
 		System.out.println("sent " + n);
@@ -105,7 +113,7 @@ public class UdpSendFile extends Thread {
 		sendMetaInfo();
 		sendMetaInfo(); // send two times, just in case
 
-		for (int i = 0; i < splitCount; i++) {
+		for (long i = 0; i < splitCount; i++) {
 			sendSpecificData(i);
 		}
 	}
@@ -135,7 +143,21 @@ public class UdpSendFile extends Thread {
 		bs[0] = (byte) ((n & 0xff000000) >>> 24);
 		bs[1] = (byte) ((n & 0x00ff0000) >>> 16);
 		bs[2] = (byte) ((n & 0x0000ff00) >>> 8);
-		bs[3] = (byte) (n & 0x000000ff);
+		bs[3] = (byte) ((n & 0x000000ff));
+
+		return bs;
+	}
+
+	private static final byte[] LongAsBytes(long n) {
+		byte[] bs = new byte[8];
+		bs[0] = (byte) ((n & 0xff00000000000000L) >>> 56);
+		bs[1] = (byte) ((n & 0x00ff000000000000L) >>> 48);
+		bs[2] = (byte) ((n & 0x0000ff0000000000L) >>> 40);
+		bs[3] = (byte) ((n & 0x000000ff00000000L) >>> 32);
+		bs[4] = (byte) ((n & 0x00000000ff000000L) >>> 24);
+		bs[5] = (byte) ((n & 0x0000000000ff0000L) >>> 16);
+		bs[6] = (byte) ((n & 0x000000000000ff00L) >>> 8);
+		bs[7] = (byte) ((n & 0x00000000000000ffL));
 
 		return bs;
 	}

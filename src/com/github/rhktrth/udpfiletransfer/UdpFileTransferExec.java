@@ -25,7 +25,7 @@ public class UdpFileTransferExec {
 	final static int DEFAULT_INTERVAL = 0;
 
 	public static void main(String[] args) {
-		System.out.println("UdpFileTransfer 0.3");
+		System.out.println("UdpFileTransfer 0.4");
 
 		String mode = DEFAULT_MODE;
 		String fileName = DEFAULT_FILENAME;
@@ -101,7 +101,7 @@ public class UdpFileTransferExec {
 				} else if (inputString.equals("meta")) {
 					udpSendFile.sendMetaInfo();
 				} else if (inputString.matches("^[0-9]*$")) {
-					udpSendFile.sendSpecificData(Integer.parseInt(inputString));
+					udpSendFile.sendSpecificData(Long.parseLong(inputString));
 				} else if (inputString.matches("^#[0-9]*$")) {
 					udpSendFile.setInterval(Integer.parseInt(inputString.substring(1)));
 				} else if (inputString.equals("quit")) {
@@ -153,7 +153,10 @@ public class UdpFileTransferExec {
 				if (inputString.equals("missing") || inputString.equals("")) {
 					udpRecvFile.printMissingNumbers();
 				} else if (inputString.matches("^file .*")) {
-					udpRecvFile.setOutputFile(new File(inputString.replaceAll("^file ", "")));
+					boolean ok = udpRecvFile.setOutputFile(new File(inputString.replaceAll("^file ", "")));
+					if (!ok) {
+						System.out.println("writing was started, file can not be changed");
+					}
 				} else if (inputString.equals("quit")) {
 					break;
 				} else {
