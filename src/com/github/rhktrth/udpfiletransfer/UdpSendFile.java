@@ -6,125 +6,115 @@
 
 package com.github.rhktrth.udpfiletransfer;
 
-import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.io.RandomAccessFile;
-import java.net.DatagramPacket;
-import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
-import java.net.SocketException;
+import java.nio.ByteBuffer;
+import java.nio.channels.DatagramChannel;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 
 public class UdpSendFile extends Thread {
-	private final static int SEQ_NUM_META = -1;
-	private final static byte[] HEADER_WORD_BYTES = "UFT1".getBytes(StandardCharsets.US_ASCII);
+	private final static int METADATA_SEQUENCE_NUMBER = -1;
+	private final static int SEND_BUFFER_SIZE = 10000;
+	private final static byte[] HEADER_KEYWORD = "UFT1".getBytes(StandardCharsets.US_ASCII);
 
-	private File inputFile;
-	private int splitSize;
-	private InetSocketAddress remoteAddress;
+	private final Path inputFile;
+	private final int splitSize;
+	private final InetSocketAddress remoteAddress;
+
 	private int interval;
+	private long splitCount;
+	private FileChannel fileChannel;
+	private DatagramChannel sendChannel;
 
-	private int splitCount;
-	private RandomAccessFile raf;
-	private DatagramSocket sendSocket;
-
-	public UdpSendFile(File fileobj, int dsize, String ip, int port, int it) {
-		this.inputFile = fileobj;
+	public UdpSendFile(Path path, int dsize, String ip, int port, int it) {
+		this.inputFile = path;
 		this.splitSize = dsize;
 		this.remoteAddress = new InetSocketAddress(ip, port);
+
 		this.interval = it;
 	}
 
 	public void run() {
-		this.splitCount = (int) (inputFile.length() / splitSize) + 1;
-
 		try {
-			this.raf = new RandomAccessFile(this.inputFile, "r");
-		} catch (FileNotFoundException e) {
+			this.splitCount = (Files.size(inputFile) + splitSize - 1) / splitSize;
+			this.fileChannel = FileChannel.open(this.inputFile, StandardOpenOption.READ);
+			this.sendChannel = DatagramChannel.open();
+		} catch (IOException e) {
 			e.printStackTrace();
 			return;
-		}
-
-		try {
-			this.sendSocket = new DatagramSocket();
-		} catch (SocketException e) {
-			e.printStackTrace();
 		}
 	}
 
 	public void setInterval(int in) {
-		interval = in;
+		this.interval = in;
+	}
+
+	public long getSplitCount() {
+		return this.splitCount;
 	}
 
 	public void close() {
 		try {
-			raf.close();
+			if (this.fileChannel != null) {
+				this.fileChannel.close();
+			}
+			if (this.sendChannel != null) {
+				this.sendChannel.close();
+			}
 		} catch (IOException e) {
 		}
-		sendSocket.close();
 	}
 
 	public void sendMetaInfo() {
-		byte[] fn = inputFile.getName().getBytes();
+		ByteBuffer merged = ByteBuffer.allocate(SEND_BUFFER_SIZE);
+		merged.put(HEADER_KEYWORD);
+		merged.putLong(METADATA_SEQUENCE_NUMBER);
+		merged.putInt(splitSize);
+		merged.putLong(splitCount);
+		merged.put(inputFile.getFileName().toString().getBytes());
+		merged.flip();
 
-		byte[] bs = new byte[HEADER_WORD_BYTES.length + 8 + 4 + 8 + fn.length];
-		System.arraycopy(HEADER_WORD_BYTES, 0, bs, 0, HEADER_WORD_BYTES.length);
-		System.arraycopy(LongAsBytes(SEQ_NUM_META), 0, bs, HEADER_WORD_BYTES.length, 8);
-		System.arraycopy(IntAsBytes(splitSize), 0, bs, HEADER_WORD_BYTES.length + 8, 4);
-		System.arraycopy(LongAsBytes(splitCount), 0, bs, HEADER_WORD_BYTES.length + 8 + 4, 8);
-		System.arraycopy(fn, 0, bs, HEADER_WORD_BYTES.length + 8 + 4 + 8, fn.length);
-
-		System.out.println("send metainfo");
-		sendUdpPacket(bs);
+		sendUdpPacket(merged);
 	}
 
 	public void sendSpecificData(long n) {
 		if (n < 0 || splitCount - 1 < n) {
-			System.out.println("no such a split number");
-			return;
+			throw new IllegalArgumentException("no such a split number");
 		}
 
-		byte[] data = new byte[splitSize];
-		int readLength;
+		ByteBuffer data = ByteBuffer.allocate(splitSize);
+		int readSize;
 		try {
-			this.raf.seek(splitSize * n);
-			readLength = this.raf.read(data);
+			this.fileChannel.position(splitSize * n);
+			do {
+				readSize = this.fileChannel.read(data);
+			} while (readSize != -1 && data.hasRemaining());
+
 		} catch (IOException e) {
 			e.printStackTrace();
 			return;
 		}
-		if (readLength < 0) {
-			System.out.println("can't read " + n);
-			return;
+		if (data.position() == 0) {
+			throw new IllegalArgumentException("can't read " + n);
 		}
+		data.flip();
 
-		byte[] point = LongAsBytes(n);
-		byte[] mergedArray = new byte[HEADER_WORD_BYTES.length + point.length + readLength];
-		System.arraycopy(HEADER_WORD_BYTES, 0, mergedArray, 0, HEADER_WORD_BYTES.length);
-		System.arraycopy(point, 0, mergedArray, HEADER_WORD_BYTES.length, point.length);
-		System.arraycopy(data, 0, mergedArray, HEADER_WORD_BYTES.length + point.length, readLength);
+		ByteBuffer merged = ByteBuffer.allocate(SEND_BUFFER_SIZE);
+		merged.put(HEADER_KEYWORD);
+		merged.putLong(n);
+		merged.put(data);
+		merged.flip();
 
-		sendUdpPacket(mergedArray);
-		System.out.println("sent " + n);
+		sendUdpPacket(merged);
 	}
 
-	public void sendMetaInfoAndAllData() {
-		sendMetaInfo();
-		sendMetaInfo(); // send two times, just in case
-
-		for (long i = 0; i < splitCount; i++) {
-			sendSpecificData(i);
-		}
-	}
-
-	private void sendUdpPacket(byte[] sendBuffer) {
-		DatagramPacket sendPacket = new DatagramPacket(sendBuffer, sendBuffer.length, remoteAddress);
+	private void sendUdpPacket(ByteBuffer targetBuffer) {
 		try {
-			sendSocket.send(sendPacket);
-		} catch (SocketException e) {
-			e.printStackTrace();
-			return;
+			sendChannel.send(targetBuffer, remoteAddress);
 		} catch (IOException e) {
 			e.printStackTrace();
 			return;
@@ -136,29 +126,5 @@ public class UdpSendFile extends Thread {
 			e.printStackTrace();
 			return;
 		}
-	}
-
-	private static final byte[] IntAsBytes(int n) {
-		byte[] bs = new byte[4];
-		bs[0] = (byte) ((n & 0xff000000) >>> 24);
-		bs[1] = (byte) ((n & 0x00ff0000) >>> 16);
-		bs[2] = (byte) ((n & 0x0000ff00) >>> 8);
-		bs[3] = (byte) ((n & 0x000000ff));
-
-		return bs;
-	}
-
-	private static final byte[] LongAsBytes(long n) {
-		byte[] bs = new byte[8];
-		bs[0] = (byte) ((n & 0xff00000000000000L) >>> 56);
-		bs[1] = (byte) ((n & 0x00ff000000000000L) >>> 48);
-		bs[2] = (byte) ((n & 0x0000ff0000000000L) >>> 40);
-		bs[3] = (byte) ((n & 0x000000ff00000000L) >>> 32);
-		bs[4] = (byte) ((n & 0x00000000ff000000L) >>> 24);
-		bs[5] = (byte) ((n & 0x0000000000ff0000L) >>> 16);
-		bs[6] = (byte) ((n & 0x000000000000ff00L) >>> 8);
-		bs[7] = (byte) ((n & 0x00000000000000ffL));
-
-		return bs;
 	}
 }

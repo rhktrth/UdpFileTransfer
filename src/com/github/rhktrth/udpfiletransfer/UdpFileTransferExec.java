@@ -7,14 +7,16 @@
 package com.github.rhktrth.udpfiletransfer;
 
 import java.io.BufferedReader;
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.net.SocketException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.Enumeration;
+import java.util.Set;
 
 public class UdpFileTransferExec {
 	final static String DEFAULT_MODE = "send";
@@ -78,6 +80,8 @@ public class UdpFileTransferExec {
 		} else { // recv
 			recv(fileName, portNumber);
 		}
+
+		System.out.println("bye");
 	}
 
 	private static void send(String fileName, String ipAddress, int portNumber, int payloadLength, int interval) {
@@ -87,27 +91,44 @@ public class UdpFileTransferExec {
 		System.out.println("  size: " + payloadLength);
 		System.out.println("  interval: " + interval);
 
-		UdpSendFile udpSendFile = new UdpSendFile(new File(fileName), payloadLength, ipAddress, portNumber, interval);
+		UdpSendFile udpSendFile = new UdpSendFile(Paths.get(fileName), payloadLength, ipAddress, portNumber, interval);
 		udpSendFile.start();
 
 		try (BufferedReader in = new BufferedReader(new InputStreamReader(System.in));) {
 			while (true) {
-				System.out.println("input command (all<default>, meta, [0-9]*, #[0-9]*, quit)");
+				try {
+					System.out.println("input command (all<default>, meta, [0-9]*, #[0-9]*, quit)");
+					String inputString = in.readLine();
 
-				String inputString = in.readLine();
-
-				if (inputString.equals("all") || inputString.equals("")) {
-					udpSendFile.sendMetaInfoAndAllData();
-				} else if (inputString.equals("meta")) {
-					udpSendFile.sendMetaInfo();
-				} else if (inputString.matches("^[0-9]*$")) {
-					udpSendFile.sendSpecificData(Long.parseLong(inputString));
-				} else if (inputString.matches("^#[0-9]*$")) {
-					udpSendFile.setInterval(Integer.parseInt(inputString.substring(1)));
-				} else if (inputString.equals("quit")) {
-					break;
-				} else {
-					System.out.println("input error");
+					if (inputString.equals("all") || inputString.equals("")) {
+						udpSendFile.sendMetaInfo();
+						System.out.println("sent metainfo");
+						udpSendFile.sendMetaInfo(); // send two times, just in case
+						System.out.println("sent metainfo again");
+						for (long i = 0; i < udpSendFile.getSplitCount(); i++) {
+							udpSendFile.sendSpecificData(i);
+							System.out.print(i + ", ");
+						}
+						System.out.println("EOF");
+					} else if (inputString.equals("meta")) {
+						udpSendFile.sendMetaInfo();
+						System.out.println("sent metainfo");
+					} else if (inputString.matches("^[0-9]*$")) {
+						long n = Long.parseLong(inputString);
+						udpSendFile.sendSpecificData(n);
+						System.out.println("sent " + n);
+					} else if (inputString.matches("^#[0-9]*$")) {
+						int n = Integer.parseInt(inputString.substring(1));
+						udpSendFile.setInterval(n);
+						System.out.println("set interval " + n);
+					} else if (inputString.equals("quit")) {
+						break;
+					} else {
+						System.out.println("input error");
+					}
+				} catch (IllegalArgumentException e) {
+					System.out.println(e.getMessage());
+					continue;
 				}
 			}
 		} catch (IOException e) {
@@ -119,7 +140,6 @@ public class UdpFileTransferExec {
 			udpSendFile.join();
 		} catch (InterruptedException e) {
 		}
-		System.out.println("bye");
 	}
 
 	private static void recv(String fileName, int portNumber) {
@@ -141,19 +161,30 @@ public class UdpFileTransferExec {
 		}
 		System.out.println("  port: " + portNumber);
 
-		UdpReceiveFile udpRecvFile = new UdpReceiveFile(portNumber, new File(fileName));
+		UdpReceiveFile udpRecvFile = new UdpReceiveFile(portNumber, Paths.get(fileName));
 		udpRecvFile.start();
 
 		try (BufferedReader in = new BufferedReader(new InputStreamReader(System.in));) {
 			while (true) {
 				System.out.println("input command (missing<default>, file [filepath], quit)");
-
 				String inputString = in.readLine();
 
 				if (inputString.equals("missing") || inputString.equals("")) {
-					udpRecvFile.printMissingNumbers();
+					Set<Long> notYet = udpRecvFile.getNotYetArrivedNumbers();
+					StringBuilder sb = new StringBuilder();
+					if (notYet.isEmpty()) {
+						sb.append("no meta infomation");
+					} else {
+						for (Long i : notYet) {
+							sb.append(i);
+							sb.append(", ");
+						}
+						sb.append("EOF");
+					}
+					System.out.println(sb);
 				} else if (inputString.matches("^file .*")) {
-					boolean ok = udpRecvFile.setOutputFile(new File(inputString.replaceAll("^file ", "")));
+					Path newPath = Paths.get(inputString.replaceAll("^file ", ""));
+					boolean ok = udpRecvFile.setOutputFile(newPath);
 					if (!ok) {
 						System.out.println("writing was started, file can not be changed");
 					}
@@ -172,6 +203,5 @@ public class UdpFileTransferExec {
 			udpRecvFile.join();
 		} catch (InterruptedException e) {
 		}
-		System.out.println("bye");
 	}
 }

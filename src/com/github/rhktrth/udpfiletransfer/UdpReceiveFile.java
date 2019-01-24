@@ -6,34 +6,36 @@
 
 package com.github.rhktrth.udpfiletransfer;
 
-import java.io.File;
 import java.io.IOException;
-import java.io.RandomAccessFile;
-import java.net.DatagramPacket;
-import java.net.DatagramSocket;
+import java.net.InetSocketAddress;
 import java.net.SocketException;
+import java.nio.ByteBuffer;
+import java.nio.channels.DatagramChannel;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.Paths;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 
 public class UdpReceiveFile extends Thread {
-	private final static long SEQ_NUM_META = -1;
+	private final static long METADATA_SEQUENCE_NUMBER = -1;
 	private final static int RECV_BUFFER_SIZE = 10000;
-	private final static String HEADER_WORD = "UFT1";
+	private final static byte[] HEADER_KEYWORD = "UFT1".getBytes(StandardCharsets.US_ASCII);
 
-	private File outputFile;
-	int portNumber;
+	private final InetSocketAddress localAddress;
 
+	private Path outputFile;
 	private Set<Long> notYetArrivedNumbers;
-	private DatagramSocket receiveSocket;
 	private boolean writingFile;
+	private DatagramChannel receiveChannel;
 
-	public UdpReceiveFile(int portnum, File fileobj) {
-		setOutputFile(fileobj);
-		this.portNumber = portnum;
+	public UdpReceiveFile(int portnum, Path path) {
+		this.localAddress = new InetSocketAddress(portnum);
+
+		this.outputFile = path;
 		this.notYetArrivedNumbers = new HashSet<Long>();
 		this.writingFile = false;
 	}
@@ -41,40 +43,50 @@ public class UdpReceiveFile extends Thread {
 	public void run() {
 		int splitSize;
 		long splitCount;
+		ByteBuffer receiveBuffer = ByteBuffer.allocate(RECV_BUFFER_SIZE);
 
 		try {
-			this.receiveSocket = new DatagramSocket(portNumber);
+			this.receiveChannel = DatagramChannel.open();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+		try {
+			this.receiveChannel.socket().bind(localAddress);
 		} catch (SocketException e) {
 			e.printStackTrace();
-			return;
 		}
-		DatagramPacket packet = new DatagramPacket(new byte[RECV_BUFFER_SIZE], RECV_BUFFER_SIZE);
 
 		/* receive meta info */
 		A: while (true) {
+			receiveBuffer.clear();
 			try {
-				this.receiveSocket.receive(packet);
+				this.receiveChannel.receive(receiveBuffer);
 			} catch (IOException e) {
 				e.printStackTrace();
-				return;
 			}
+			receiveBuffer.flip();
 
-			byte[] packetData = packet.getData();
-			int receivedSize = packet.getLength();
-
-			String headerWord = new String(Arrays.copyOf(packetData, 4), StandardCharsets.US_ASCII);
-			if (!HEADER_WORD.equals(headerWord)) {
+			byte[] headerBytes = new byte[HEADER_KEYWORD.length];
+			if (receiveBuffer.remaining() < headerBytes.length) {
+				System.out.println("too short data was received");
+				continue;
+			}
+			receiveBuffer.get(headerBytes);
+			if (!Arrays.equals(HEADER_KEYWORD, headerBytes)) {
 				System.out.println("illegal data was received");
 				continue;
 			}
-			long seqnum = bytesAsLong(packetData, 4, 8);
-			if (seqnum == SEQ_NUM_META) {
-				splitSize = bytesAsInt(packetData, 12, 4);
-				splitCount = bytesAsLong(packetData, 16, 8);
+
+			long sequenceNumber = receiveBuffer.getLong();
+			if (sequenceNumber == METADATA_SEQUENCE_NUMBER) {
+				splitSize = receiveBuffer.getInt();
+				splitCount = receiveBuffer.getLong();
 				for (long i = 0; i < splitCount; i++) {
 					this.notYetArrivedNumbers.add(i);
 				}
-				String orgFileName = new String(Arrays.copyOfRange(packetData, 24, receivedSize));
+				byte[] byteArray = new byte[receiveBuffer.remaining()];
+				receiveBuffer.get(byteArray);
+				String orgFileName = new String(byteArray);
 				System.out.println("meta: " + orgFileName + " " + splitSize + " " + splitCount);
 				break A;
 			}
@@ -82,38 +94,48 @@ public class UdpReceiveFile extends Thread {
 		System.out.println("meta info was received");
 
 		/* receive data and write file */
-		writingFile = true;
+		this.writingFile = true;
 		try {
-			Files.deleteIfExists(Paths.get(outputFile.getPath()));
-			outputFile.createNewFile();
+			Files.deleteIfExists(this.outputFile);
+			Files.createFile(this.outputFile);
 		} catch (IOException e) {
 			e.printStackTrace();
 			return;
 		}
-		System.out.println("receive file created: " + outputFile);
+		System.out.println("receive file created: " + this.outputFile);
 
-		try (RandomAccessFile raf = new RandomAccessFile(this.outputFile, "rw");) {
+		try (FileChannel fileChannel = FileChannel.open(this.outputFile, StandardOpenOption.WRITE);) {
 			while (!this.notYetArrivedNumbers.isEmpty()) {
+				receiveBuffer.clear();
 				try {
-					this.receiveSocket.receive(packet);
+					this.receiveChannel.receive(receiveBuffer);
 				} catch (IOException e) {
-					return;
+					e.printStackTrace();
 				}
+				receiveBuffer.flip();
 
-				byte[] packetData = packet.getData();
-				int receivedSize = packet.getLength();
-
-				String headerWord = new String(Arrays.copyOf(packetData, 4), StandardCharsets.US_ASCII);
-				if (!HEADER_WORD.equals(headerWord)) {
+				if (receiveBuffer.remaining() < HEADER_KEYWORD.length) {
+					System.out.println("too short data was received");
+					continue;
+				}
+				byte[] headerBytes = new byte[HEADER_KEYWORD.length];
+				receiveBuffer.get(headerBytes);
+				if (!Arrays.equals(HEADER_KEYWORD, headerBytes)) {
 					System.out.println("illegal data was received");
 					continue;
 				}
-				long seqnum = bytesAsLong(packetData, 4, 8);
-				if (seqnum >= 0 && this.notYetArrivedNumbers.contains(seqnum)) {
-					byte[] d = Arrays.copyOfRange(packetData, 12, receivedSize);
-					raf.seek(splitSize * seqnum);
-					raf.write(d);
-					this.notYetArrivedNumbers.remove(seqnum);
+
+				long sequenceNumber = receiveBuffer.getLong();
+				if (sequenceNumber >= 0 && this.notYetArrivedNumbers.contains(sequenceNumber)) {
+					byte[] data = new byte[receiveBuffer.remaining()];
+					receiveBuffer.get(data);
+					ByteBuffer databuf = ByteBuffer.wrap(data);
+					int writtenSize;
+					fileChannel.position(splitSize * sequenceNumber);
+					do {
+						writtenSize = fileChannel.write(databuf);
+					} while (writtenSize != -1 && databuf.hasRemaining());
+					this.notYetArrivedNumbers.remove(sequenceNumber);
 				}
 			}
 		} catch (IOException e) {
@@ -124,58 +146,25 @@ public class UdpReceiveFile extends Thread {
 		System.exit(0);
 	}
 
-	public boolean setOutputFile(File fileobj) {
-		if (writingFile) {
+	public boolean setOutputFile(Path path) {
+		if (this.writingFile) {
 			return false;
 		} else {
-			outputFile = fileobj;
+			this.outputFile = path;
 			return true;
 		}
 	}
 
 	public void close() {
-		if (receiveSocket != null) {
-			receiveSocket.close();
-		}
-	}
-
-	public void printMissingNumbers() {
-		StringBuilder sb = new StringBuilder();
-		if (this.notYetArrivedNumbers.isEmpty()) {
-			sb.append("no meta infomation");
-		} else {
-			for (Long i : this.notYetArrivedNumbers) {
-				sb.append(i);
-				sb.append(", ");
+		if (this.receiveChannel != null) {
+			try {
+				this.receiveChannel.close();
+			} catch (IOException e) {
 			}
-			sb.append("EOF");
 		}
-		System.out.println(sb);
 	}
 
-	private static final int bytesAsInt(byte[] byteArr, int offset, int length) {
-		if (length > 4) {
-			throw new IllegalArgumentException("Only 4 or fewer bytes can fit into an int");
-		}
-		int val = 0;
-		int last = offset + length;
-		for (int i = offset; i < last; i++) {
-			val <<= 8;
-			val |= byteArr[i] & 0xff;
-		}
-		return val;
-	}
-
-	private static final long bytesAsLong(byte[] byteArr, int offset, int length) {
-		if (length > 8) {
-			throw new IllegalArgumentException("Only 8 or fewer bytes can fit into an int");
-		}
-		long val = 0;
-		int last = offset + length;
-		for (int i = offset; i < last; i++) {
-			val <<= 8;
-			val |= byteArr[i] & 0xff;
-		}
-		return val;
+	public Set<Long> getNotYetArrivedNumbers() {
+		return new HashSet<Long>(notYetArrivedNumbers);
 	}
 }
