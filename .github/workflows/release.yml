@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing GitHub Release tag to build and upload assets to (for example v0.5.0)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "release tag must be vX.Y.Z: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          VERSION="${RELEASE_TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: '8'
+          cache: maven
+
+      - name: Verify release target
+        shell: bash
+        run: |
+          git fetch --no-tags origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+          if ! git merge-base --is-ancestor HEAD "origin/${DEFAULT_BRANCH}"; then
+            echo "release tag must point to a commit in default branch (${DEFAULT_BRANCH}) history" >&2
+            exit 1
+          fi
+
+      - name: Inject release version into Maven project
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("pom.xml")
+          text = path.read_text(encoding="utf-8")
+          updated, count = re.subn(
+              r'(<artifactId>[^<]+</artifactId>\s*)<version>[^<]+</version>',
+              lambda m: f"{m.group(1)}<version>{os.environ['VERSION']}</version>",
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("could not set project version in pom.xml")
+          path.write_text(updated, encoding="utf-8")
+          PY
+
+      - name: Verify
+        run: mvn -B -ntp verify
+
+      - name: Create SHA-256 checksum
+        working-directory: target
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: sha256sum "UdpFileTransfer-${VERSION}.zip" > "UdpFileTransfer-${VERSION}.zip.sha256"
+
+      - name: Upload assets to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            "target/UdpFileTransfer-${VERSION}.zip" \
+            "target/UdpFileTransfer-${VERSION}.zip.sha256" \
+            --clobber
