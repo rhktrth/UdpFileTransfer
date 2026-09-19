@@ -36,6 +36,8 @@ target/UdpFileTransfer-<version>.zip
 
 ## CI
 
+Pull Request の通常 CI は Actions 実行回数を抑えるため、Draft PR では job を実行しません。Ready for review へ変更した時点、および Ready 状態で head commit が更新された時点で CI を実行します。CI 失敗後に修正を反復する場合は PR を Draft へ戻し、必要な修正とローカル確認をまとめてから再び Ready for review へ変更します。`main` への push や手動実行など、Pull Request 以外の既存トリガーはこの Draft 制御の対象外です。
+
 `.github/workflows/test.yml` は Pull Request と `main` push で Java 8 / Java 25 の `mvn -B -ntp verify` を実行します。ソースコードだけでなく、仕様書・運用文書だけの変更でも同じ検証を実行します。
 
 同じrefで新しい実行が開始された場合は古い実行を取り消し、jobにはtimeoutを設定します。UDP integration testはloopbackのみを使用し、CIから外部ホストへ接続しません。
